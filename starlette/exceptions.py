@@ -48,7 +48,6 @@ class BaseExceptionMiddleware:
         raise exc
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        print(f"ExceptionMiddleware.call. scope.type={scope['type']}, scope.extensions={scope['extensions']}")
         if not self._is_scope_supported(scope):
             await self.app(scope, receive, send)
             return
@@ -79,6 +78,11 @@ class BaseExceptionMiddleware:
             else:
                 http_connection = WebSocket(scope, receive=receive)
                 async def sender(message: Message) -> None:
+                    """
+                    All response classes send "http.response.start" and "http.response.body".
+                    This function adapts them to websocket.http.response.start / websocket.http.response.body,
+                    as expected for ASGI Websocket Denial Response
+                    """
                     if message["type"] in ["http.response.start", "http.response.body"]:
                         message["type"] = "websocket." + message["type"]
                     await send(message)
