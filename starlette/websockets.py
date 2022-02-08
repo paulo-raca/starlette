@@ -2,7 +2,7 @@ import enum
 import json
 import typing
 
-from starlette.requests import HTTPConnection
+from starlette.requests import HTTPConnection, empty_receive, empty_send
 from starlette.types import Message, Receive, Scope, Send
 
 
@@ -18,7 +18,7 @@ class WebSocketDisconnect(Exception):
 
 
 class WebSocket(HTTPConnection):
-    def __init__(self, scope: Scope, receive: Receive, send: Send) -> None:
+    def __init__(self, scope: Scope, receive: Receive = empty_receive, send: Send = empty_send) -> None:
         super().__init__(scope)
         assert scope["type"] == "websocket"
         self._receive = receive

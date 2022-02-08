@@ -1,10 +1,12 @@
 import asyncio
 import http
-import typing
+from typing import Callable, Any, Optional, Mapping, Dict, Type, Union, Awaitable
+
 
 from starlette.concurrency import run_in_threadpool
-from starlette.requests import Request
+from starlette.requests import HTTPConnection, Request
 from starlette.responses import PlainTextResponse, Response
+from starlette.websockets import WebSocket
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 
@@ -19,42 +21,35 @@ class HTTPException(Exception):
         class_name = self.__class__.__name__
         return f"{class_name}(status_code={self.status_code!r}, detail={self.detail!r})"
 
+ExceptionTypeOrStatusCode = Union[int, Type[Exception]]
+ExceptionHandler = Callable[[HTTPConnection, Exception], Union[Response, Awaitable[Response]]]
 
-class ExceptionMiddleware:
-    def __init__(
-        self, app: ASGIApp, handlers: dict = None, debug: bool = False
-    ) -> None:
-        self.app = app
-        self.debug = debug  # TODO: We ought to handle 404 cases if debug is set.
-        self._status_handlers: typing.Dict[int, typing.Callable] = {}
-        self._exception_handlers: typing.Dict[
-            typing.Type[Exception], typing.Callable
-        ] = {HTTPException: self.http_exception}
-        if handlers is not None:
-            for key, value in handlers.items():
-                self.add_exception_handler(key, value)
 
-    def add_exception_handler(
-        self,
-        exc_class_or_status_code: typing.Union[int, typing.Type[Exception]],
-        handler: typing.Callable,
-    ) -> None:
-        if isinstance(exc_class_or_status_code, int):
-            self._status_handlers[exc_class_or_status_code] = handler
-        else:
-            assert issubclass(exc_class_or_status_code, Exception)
-            self._exception_handlers[exc_class_or_status_code] = handler
+class BaseExceptionMiddleware:
+    def _is_scope_supported(self, scope: Scope) -> bool:
+        if scope["type"] == "http":
+            return True
+        if scope["type"] == "websocket":
+            return "websocket.http.response" in scope.get("extensions", {})
+        return False
 
-    def _lookup_exception_handler(
-        self, exc: Exception
-    ) -> typing.Optional[typing.Callable]:
-        for cls in type(exc).__mro__:
-            if cls in self._exception_handlers:
-                return self._exception_handlers[cls]
-        return None
+    def get_exception_handler(self, exc: Exception) -> Optional[ExceptionHandler]:
+        raise NotImplementedError()
+
+    def response_already_started(self, exc: Exception):
+        # Response has already started, there isn't anything this middleware can do -- 
+        # Just propagate the exception to the server / test client
+        raise exc
+
+    def propagate_exception(self, exc: Exception):
+        # We always continue to raise the exception.
+        # This allows servers to log the error, or allows test clients
+        # to optionally raise the error within the test case.
+        raise exc
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
+        print(f"ExceptionMiddleware.call. scope.type={scope['type']}, scope.extensions={scope['extensions']}")
+        if not self._is_scope_supported(scope):
             await self.app(scope, receive, send)
             return
 
@@ -63,36 +58,86 @@ class ExceptionMiddleware:
         async def sender(message: Message) -> None:
             nonlocal response_started
 
-            if message["type"] == "http.response.start":
+            if message["type"] in ["http.response.start", "websocket.accept", "websocket.close", "websocket.http.response.start"]:
                 response_started = True
             await send(message)
 
         try:
             await self.app(scope, receive, sender)
         except Exception as exc:
-            handler = None
-
-            if isinstance(exc, HTTPException):
-                handler = self._status_handlers.get(exc.status_code)
-
-            if handler is None:
-                handler = self._lookup_exception_handler(exc)
+            handler = self.get_exception_handler(exc)
 
             if handler is None:
                 raise exc
 
             if response_started:
-                msg = "Caught handled exception, but response already started."
-                raise RuntimeError(msg) from exc
+                self.response_already_started(exc)
 
-            request = Request(scope, receive=receive)
-            if asyncio.iscoroutinefunction(handler):
-                response = await handler(request, exc)
+            if scope["type"] == "http":
+                http_connection = Request(scope, receive=receive) 
+                sender = send
             else:
-                response = await run_in_threadpool(handler, request, exc)
+                http_connection = WebSocket(scope, receive=receive)
+                async def sender(message: Message) -> None:
+                    if message["type"] in ["http.response.start", "http.response.body"]:
+                        message["type"] = "websocket." + message["type"]
+                    await send(message)
+
+            if asyncio.iscoroutinefunction(handler):
+                response = await handler(http_connection, exc)
+            else:
+                response = await run_in_threadpool(handler, http_connection, exc)
             await response(scope, receive, sender)
 
-    def http_exception(self, request: Request, exc: HTTPException) -> Response:
+            self.propagate_exception(exc)       
+
+
+class ExceptionMiddleware(BaseExceptionMiddleware):
+    def __init__(
+        self,
+        app: ASGIApp,
+        handlers: Mapping[ExceptionTypeOrStatusCode, ExceptionHandler] = None,
+        debug: bool = False,
+    ) -> None:
+        self.app = app
+        self.debug = debug  # TODO: We ought to handle 404 cases if debug is set.
+        self._status_handlers: Dict[int, ExceptionHandler] = {}
+        self._exception_handlers: Dict[Type[Exception], ExceptionHandler] = {HTTPException: self.http_exception}
+        if handlers is not None:
+            for key, value in handlers.items():
+                self.add_exception_handler(key, value)
+
+    def add_exception_handler(
+        self,
+        exc_class_or_status_code: ExceptionTypeOrStatusCode,
+        handler: ExceptionHandler,
+    ) -> None:
+        if isinstance(exc_class_or_status_code, int):
+            self._status_handlers[exc_class_or_status_code] = handler
+        else:
+            assert issubclass(exc_class_or_status_code, Exception)
+            self._exception_handlers[exc_class_or_status_code] = handler
+
+    def get_exception_handler(self, exc: Exception) -> Optional[ExceptionHandler]:
+        if isinstance(exc, HTTPException):
+            handler = self._status_handlers.get(exc.status_code)
+            if handler:
+                return handler
+        for cls in type(exc).__mro__:
+            if cls in self._exception_handlers:
+                return self._exception_handlers[cls]
+        return None
+
+    def response_already_started(self, exc: Exception):
+        # Just note that this exception would have been handled if the response hadn't started yet
+        msg = "Caught handled exception, but response already started."
+        raise RuntimeError(msg) from exc
+
+    def propagate_exception(self, exc: Exception):
+        # ExceptionMiddleware does not propagate exceptions to the server or test clients
+        pass
+
+    def http_exception(self, http_connection: HTTPConnection, exc: HTTPException) -> Response:
         if exc.status_code in {204, 304}:
             return Response(b"", status_code=exc.status_code)
         return PlainTextResponse(exc.detail, status_code=exc.status_code)
