@@ -29,6 +29,21 @@ def guess_type(
         url = os.fspath(url)
     return mimetypes_guess_type(url, strict)
 
+def http_response_start(scope: Scope) -> str:
+    if scope["type"] == "http":
+        return "http.response.start"
+    else:
+        # Ensure it is a websocket and Websocket Denial Response is supported
+        assert scope["type"] == "websocket" and "websocket.http.response" in scope.get("extensions", {}), "Cannot send an HTTP Response to {scope['type']} scope"
+        return "websocket.http.response.start"
+
+def http_response_body(scope: Scope) -> str:
+    if scope["type"] == "http":
+        return "http.response.body"
+    else:
+        # Ensure it is a websocket and Websocket Denial Response is supported
+        assert scope["type"] == "websocket" and "websocket.http.response" in scope.get("extensions", {}), "Cannot send an HTTP Response to {scope['type']} scope"
+        return "websocket.http.response.body"
 
 class Response:
     media_type = None
@@ -148,12 +163,12 @@ class Response:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         await send(
             {
-                "type": "http.response.start",
+                "type": http_response_start(scope),
                 "status": self.status_code,
                 "headers": self.raw_headers,
             }
         )
-        await send({"type": "http.response.body", "body": self.body})
+        await send({"type": http_response_body(scope), "body": self.body})
 
         if self.background is not None:
             await self.background()
@@ -215,13 +230,14 @@ class StreamingResponse(Response):
     async def listen_for_disconnect(self, receive: Receive) -> None:
         while True:
             message = await receive()
-            if message["type"] == "http.disconnect":
+            print("listen_for_disconnect -- got", message)
+            if message["type"] in ["http.disconnect", "websocket.disconnect"]:
                 break
 
-    async def stream_response(self, send: Send) -> None:
+    async def stream_response(self, scope: Scope, send: Send) -> None:
         await send(
             {
-                "type": "http.response.start",
+                "type": http_response_start(scope),
                 "status": self.status_code,
                 "headers": self.raw_headers,
             }
@@ -229,9 +245,9 @@ class StreamingResponse(Response):
         async for chunk in self.body_iterator:
             if not isinstance(chunk, bytes):
                 chunk = chunk.encode(self.charset)
-            await send({"type": "http.response.body", "body": chunk, "more_body": True})
+            await send({"type": http_response_body(scope), "body": chunk, "more_body": True})
 
-        await send({"type": "http.response.body", "body": b"", "more_body": False})
+        await send({"type": http_response_body(scope), "body": b"", "more_body": False})
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         async with anyio.create_task_group() as task_group:
@@ -240,7 +256,7 @@ class StreamingResponse(Response):
                 await func()
                 task_group.cancel_scope.cancel()
 
-            task_group.start_soon(wrap, partial(self.stream_response, send))
+            task_group.start_soon(wrap, partial(self.stream_response, scope, send))
             await wrap(partial(self.listen_for_disconnect, receive))
 
         if self.background is not None:
@@ -306,13 +322,13 @@ class FileResponse(Response):
                     raise RuntimeError(f"File at path {self.path} is not a file.")
         await send(
             {
-                "type": "http.response.start",
+                "type": http_response_start(scope),
                 "status": self.status_code,
                 "headers": self.raw_headers,
             }
         )
         if self.send_header_only:
-            await send({"type": "http.response.body", "body": b"", "more_body": False})
+            await send({"type": http_response_body(scope), "body": b"", "more_body": False})
         else:
             async with await anyio.open_file(self.path, mode="rb") as file:
                 more_body = True
@@ -321,7 +337,7 @@ class FileResponse(Response):
                     more_body = len(chunk) == self.chunk_size
                     await send(
                         {
-                            "type": "http.response.body",
+                            "type": http_response_body(scope),
                             "body": chunk,
                             "more_body": more_body,
                         }

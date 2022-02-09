@@ -64,34 +64,20 @@ class BaseExceptionMiddleware:
         try:
             await self.app(scope, receive, sender)
         except Exception as exc:
-            handler = self.get_exception_handler(exc)
-
-            if handler is None:
-                raise exc
 
             if response_started:
                 self.response_already_started(exc)
 
-            if scope["type"] == "http":
-                http_connection = Request(scope, receive=receive) 
-                sender = send
-            else:
-                http_connection = WebSocket(scope, receive=receive)
-                async def sender(message: Message) -> None:
-                    """
-                    All response classes send "http.response.start" and "http.response.body".
-                    This function adapts them to websocket.http.response.start / websocket.http.response.body,
-                    as expected for ASGI Websocket Denial Response
-                    """
-                    if message["type"] in ["http.response.start", "http.response.body"]:
-                        message["type"] = "websocket." + message["type"]
-                    await send(message)
+            handler = self.get_exception_handler(exc)
+            if handler is None:
+                raise exc
 
+            conn = HTTPConnection(scope)
             if asyncio.iscoroutinefunction(handler):
-                response = await handler(http_connection, exc)
+                response = await handler(conn, exc)
             else:
-                response = await run_in_threadpool(handler, http_connection, exc)
-            await response(scope, receive, sender)
+                response = await run_in_threadpool(handler, conn, exc)
+            await response(scope, receive, send)
 
             self.propagate_exception(exc)       
 
