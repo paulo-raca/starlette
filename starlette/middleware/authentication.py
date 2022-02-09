@@ -36,7 +36,8 @@ class AuthenticationMiddleware:
             auth_result = await self.backend.authenticate(conn)
         except AuthenticationError as exc:
             response = self.on_error(conn, exc)
-            if scope["type"] == "websocket":
+            if scope["type"] == "websocket" and "websocket.http.response" not in scope.get("extensions", {}):
+                # This is a websocket connection and Websocket Denial Response is not supported -- just close it
                 await send({"type": "websocket.close", "code": 1000})
             else:
                 await response(scope, receive, send)

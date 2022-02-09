@@ -46,9 +46,21 @@ def requires(
                 assert isinstance(websocket, WebSocket)
 
                 if not has_required_scope(websocket, scopes_list):
-                    await websocket.close()
-                else:
-                    await func(*args, **kwargs)
+                    if "websocket.http.response" not in websocket.scope.get("extensions", {}):
+                        # Websocket Denial Response is not supported, 
+                        # close websocket without details
+                        await websocket.close()
+                        return
+                    else:
+                        if redirect is not None:
+                            response = RedirectResponse(
+                                url=websocket.url_for(redirect), status_code=303
+                            )
+                            await response(websocket.scope, websocket._receive, websocket._send)
+                        else:
+                            raise HTTPException(status_code=status_code)
+                        
+                await func(*args, **kwargs)
 
             return websocket_wrapper
 
@@ -66,7 +78,9 @@ def requires(
                         return RedirectResponse(
                             url=request.url_for(redirect), status_code=303
                         )
-                    raise HTTPException(status_code=status_code)
+                    else:
+                        raise HTTPException(status_code=status_code)
+
                 return await func(*args, **kwargs)
 
             return async_wrapper
@@ -83,7 +97,9 @@ def requires(
                         return RedirectResponse(
                             url=request.url_for(redirect), status_code=303
                         )
-                    raise HTTPException(status_code=status_code)
+                    else:
+                        raise HTTPException(status_code=status_code)
+                        
                 return func(*args, **kwargs)
 
             return sync_wrapper
