@@ -127,7 +127,7 @@ class ExceptionMiddleware(BaseExceptionMiddleware):
         # ExceptionMiddleware does not propagate exceptions to the server or test clients
         pass
 
-    def http_exception(self, http_connection: HTTPConnection, exc: HTTPException) -> Response:
+    def http_exception(self, conn: HTTPConnection, exc: HTTPException) -> Response:
         if exc.status_code in {204, 304}:
             return Response(b"", status_code=exc.status_code)
         return PlainTextResponse(exc.detail, status_code=exc.status_code)

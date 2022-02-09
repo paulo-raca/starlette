@@ -206,8 +206,8 @@ class ServerErrorMiddleware(BaseExceptionMiddleware):
     def generate_plain_text(self, exc: Exception) -> str:
         return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
 
-    def debug_response(self, http_connection: HTTPConnection, exc: Exception) -> Response:
-        accept = http_connection.headers.get("accept", "")
+    def debug_response(self, conn: HTTPConnection, exc: Exception) -> Response:
+        accept = conn.headers.get("accept", "")
 
         if "text/html" in accept:
             content = self.generate_html(exc)
@@ -215,5 +215,5 @@ class ServerErrorMiddleware(BaseExceptionMiddleware):
         content = self.generate_plain_text(exc)
         return PlainTextResponse(content, status_code=500)
 
-    def error_response(self, http_connection: HTTPConnection, exc: Exception) -> Response:
+    def error_response(self, conn: HTTPConnection, exc: Exception) -> Response:
         return PlainTextResponse("Internal Server Error", status_code=500)
