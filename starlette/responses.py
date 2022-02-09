@@ -230,7 +230,6 @@ class StreamingResponse(Response):
     async def listen_for_disconnect(self, receive: Receive) -> None:
         while True:
             message = await receive()
-            print("listen_for_disconnect -- got", message)
             if message["type"] in ["http.disconnect", "websocket.disconnect"]:
                 break
 
