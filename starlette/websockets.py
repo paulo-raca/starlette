@@ -3,6 +3,7 @@ import json
 import typing
 
 from starlette.requests import HTTPConnection, empty_receive, empty_send
+from starlette.responses import Response
 from starlette.types import Message, Receive, Scope, Send
 
 
@@ -142,9 +143,41 @@ class WebSocket(HTTPConnection):
         await self.send({"type": "websocket.close", "code": code})
 
 
-class WebSocketClose:
-    def __init__(self, code: int = 1000) -> None:
-        self.code = code
+class WebsocketDenialResponse:
+    """
+    Represents a failure to stabilish a websocket connection 
+
+    If a Response is provided and the ASGI server supports the Websocket Denial Response extension,
+    that is sent to the client. 
+    Otherwise a standard 'close' event is sent, resulting in a generic HTTP 403 error
+    """
+    def __init__(self, response: Response = None) -> None:
+        self.response = response
+
+    message_type_map = {
+        "http.response.start": "websocket.http.response.start",
+        "http.response.body": "websocket.http.response.body",
+        "websocket.disconnect": "http.disconnect",
+    }
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        await send({"type": "websocket.close", "code": self.code})
+        if Response is None or (scope["type"] == "websocket" and "websocket.http.response" not in scope.get("extensions", {})):
+            # This is a websocket connection and Websocket Denial Response is not supported -- just close it
+            await send({"type": "websocket.close"})
+
+        else:
+            async def xsend(msg: Message) -> None:
+                new_type = self.message_type_map.get(msg["type"])
+                if new_type is not None:
+                    msg["type"] = new_type
+                    await send(msg)
+
+            async def xreceive() -> Message:
+                while True:
+                    msg = await receive()
+                    new_type = self.message_type_map.get(msg["type"])
+                    if new_type is not None:
+                        msg["type"] = new_type
+                        return msg
+
+            await self.response(scope, xreceive, xsend)

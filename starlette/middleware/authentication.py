@@ -9,6 +9,7 @@ from starlette.authentication import (
 from starlette.requests import HTTPConnection
 from starlette.responses import PlainTextResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.websockets import WebsocketDenialResponse
 
 
 class AuthenticationMiddleware:
@@ -36,11 +37,9 @@ class AuthenticationMiddleware:
             auth_result = await self.backend.authenticate(conn)
         except AuthenticationError as exc:
             response = self.on_error(conn, exc)
-            if scope["type"] == "websocket" and "websocket.http.response" not in scope.get("extensions", {}):
-                # This is a websocket connection and Websocket Denial Response is not supported -- just close it
-                await send({"type": "websocket.close", "code": 1000})
-            else:
-                await response(scope, receive, send)
+            if scope["type"] == "websocket":
+                response = WebsocketDenialResponse(response)
+            await response(scope, receive, send)
             return
 
         if auth_result is None:

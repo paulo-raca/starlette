@@ -6,7 +6,7 @@ from typing import Callable, Any, Optional, Mapping, Dict, Type, Union, Awaitabl
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import HTTPConnection, Request
 from starlette.responses import PlainTextResponse, Response
-from starlette.websockets import WebSocket
+from starlette.websockets import WebSocket, WebsocketDenialResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 
@@ -26,13 +26,6 @@ ExceptionHandler = Callable[[HTTPConnection, Exception], Union[Response, Awaitab
 
 
 class BaseExceptionMiddleware:
-    def _is_scope_supported(self, scope: Scope) -> bool:
-        if scope["type"] == "http":
-            return True
-        if scope["type"] == "websocket":
-            return "websocket.http.response" in scope.get("extensions", {})
-        return False
-
     def get_exception_handler(self, exc: Exception) -> Optional[ExceptionHandler]:
         raise NotImplementedError()
 
@@ -48,7 +41,7 @@ class BaseExceptionMiddleware:
         raise exc
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if not self._is_scope_supported(scope):
+        if scope["type"] not in ["http", "websocket"]:
             await self.app(scope, receive, send)
             return
 
@@ -77,6 +70,10 @@ class BaseExceptionMiddleware:
                 response = await handler(conn, exc)
             else:
                 response = await run_in_threadpool(handler, conn, exc)
+
+            if scope["type"] == "websocket":
+                response = WebsocketDenialResponse(response)
+            
             await response(scope, receive, send)
 
             self.propagate_exception(exc)       

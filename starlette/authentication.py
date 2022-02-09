@@ -6,7 +6,7 @@ import typing
 from starlette.exceptions import HTTPException
 from starlette.requests import HTTPConnection, Request
 from starlette.responses import RedirectResponse, Response
-from starlette.websockets import WebSocket
+from starlette.websockets import WebSocket, WebsocketDenialResponse
 
 
 def has_required_scope(conn: HTTPConnection, scopes: typing.Sequence[str]) -> bool:
@@ -46,19 +46,13 @@ def requires(
                 assert isinstance(websocket, WebSocket)
 
                 if not has_required_scope(websocket, scopes_list):
-                    if "websocket.http.response" not in websocket.scope.get("extensions", {}):
-                        # Websocket Denial Response is not supported, 
-                        # close websocket without details
-                        await websocket.close()
-                        return
+                    if redirect is not None:
+                        response = WebsocketDenialResponse(RedirectResponse(
+                            url=websocket.url_for(redirect), status_code=303
+                        ))
+                        await response(websocket.scope, websocket._receive, websocket._send)
                     else:
-                        if redirect is not None:
-                            response = RedirectResponse(
-                                url=websocket.url_for(redirect), status_code=303
-                            )
-                            await response(websocket.scope, websocket._receive, websocket._send)
-                        else:
-                            raise HTTPException(status_code=status_code)
+                        raise HTTPException(status_code=status_code)
                         
                 await func(*args, **kwargs)
 
